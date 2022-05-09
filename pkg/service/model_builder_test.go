@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"github.com/pkg/errors"
 	"testing"
 	"time"
 
@@ -10,11 +9,13 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	elbv2sdk "github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/golang/mock/gomock"
+	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/annotations"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/config"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/deploy"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/deploy/elbv2"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/deploy/tracking"
@@ -34,10 +35,11 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
 		sdkLBs []elbv2.LoadBalancerWithTags
 		err    error
 	}
-	type resolveCIDRsCall struct {
-		cidrs []string
-		err   error
+	type fetchVPCInfoCall struct {
+		wantVPCInfo networking.VPCInfo
+		err         error
 	}
+	cidrBlockStateAssociated := ec2.VpcCidrBlockStateCodeAssociated
 	resolveViaDiscoveryCallForOneSubnet := resolveViaDiscoveryCall{
 		subnets: []*ec2.Subnet{
 			{
@@ -98,11 +100,12 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
 		resolveViaDiscoveryCalls     []resolveViaDiscoveryCall
 		resolveViaNameOrIDSliceCalls []resolveViaNameOrIDSliceCall
 		listLoadBalancerCalls        []listLoadBalancerCall
-		resolveCIDRsCalls            []resolveCIDRsCall
+		fetchVPCInfoCalls            []fetchVPCInfoCall
 		svc                          *corev1.Service
 		wantError                    bool
 		wantValue                    string
 		wantNumResources             int
+		restrictToTypeLoadBalancer   bool
 	}{
 		{
 			testName: "Simple service",
@@ -179,6 +182,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
           "spec":{
              "name":"k8s-default-nlbipsvc-d4818dcd51",
              "targetType":"ip",
+             "ipAddressType":"ipv4",
              "port":80,
              "protocol":"TCP",
              "healthCheckConfig":{
@@ -211,6 +215,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
                       "$ref":"#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/default/nlb-ip-svc-tls:80/status/targetGroupARN"
                    },
                    "targetType":"ip",
+                   "ipAddressType":"ipv4",
                    "serviceRef":{
                       "name":"nlb-ip-svc-tls",
                       "port":80
@@ -321,6 +326,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
           "spec":{
              "name":"k8s-default-nlbipsvc-d4818dcd51",
              "targetType":"ip",
+             "ipAddressType":"ipv4",
              "port":80,
              "protocol":"TCP",
              "healthCheckConfig":{
@@ -353,6 +359,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
                       "$ref":"#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/default/nlb-ip-svc-tls:80/status/targetGroupARN"
                    },
                    "targetType":"ip",
+                   "ipAddressType":"ipv4",
                    "serviceRef":{
                       "name":"nlb-ip-svc-tls",
                       "port":80
@@ -502,6 +509,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
           "spec":{
              "name":"k8s-default-nlbipsvc-62f81639fc",
              "targetType":"ip",
+             "ipAddressType":"ipv4",
              "port":80,
              "protocol":"TCP",
              "healthCheckConfig":{
@@ -524,6 +532,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
           "spec":{
              "name":"k8s-default-nlbipsvc-3ede6b28b6",
              "targetType":"ip",
+             "ipAddressType":"ipv4",
              "port":80,
              "protocol":"TCP",
              "healthCheckConfig":{
@@ -557,6 +566,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
                       "$ref":"#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/default/nlb-ip-svc:80/status/targetGroupARN"
                    },
                    "targetType":"ip",
+                   "ipAddressType":"ipv4",
                    "serviceRef":{
                       "name":"nlb-ip-svc",
                       "port":80
@@ -622,6 +632,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
                       "$ref":"#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/default/nlb-ip-svc:83/status/targetGroupARN"
                    },
                    "targetType":"ip",
+                   "ipAddressType":"ipv4",
                    "serviceRef":{
                       "name":"nlb-ip-svc",
                       "port":83
@@ -832,6 +843,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
           "spec":{
              "name":"k8s-default-nlbipsvc-62f81639fc",
              "targetType":"ip",
+             "ipAddressType":"ipv4",
              "port":80,
              "protocol":"TCP",
              "healthCheckConfig":{
@@ -854,6 +866,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
           "spec":{
              "name":"k8s-default-nlbipsvc-77ea0c7734",
              "targetType":"ip",
+             "ipAddressType":"ipv4",
              "port":8883,
              "protocol":"TCP",
              "healthCheckConfig":{
@@ -887,6 +900,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
                       "$ref":"#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/default/nlb-ip-svc-tls:80/status/targetGroupARN"
                    },
                    "targetType":"ip",
+                   "ipAddressType":"ipv4",
                    "serviceRef":{
                       "name":"nlb-ip-svc-tls",
                       "port":80
@@ -937,6 +951,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
                       "$ref":"#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/default/nlb-ip-svc-tls:83/status/targetGroupARN"
                    },
                    "targetType":"ip",
+                   "ipAddressType":"ipv4",
                    "serviceRef":{
                       "name":"nlb-ip-svc-tls",
                       "port":83
@@ -1063,9 +1078,18 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
 				},
 			},
 			resolveViaDiscoveryCalls: []resolveViaDiscoveryCall{resolveViaDiscoveryCallForThreeSubnet},
-			resolveCIDRsCalls: []resolveCIDRsCall{
+			fetchVPCInfoCalls: []fetchVPCInfoCall{
 				{
-					cidrs: []string{"192.168.0.0/16"},
+					wantVPCInfo: networking.VPCInfo{
+						CidrBlockAssociationSet: []*ec2.VpcCidrBlockAssociation{
+							{
+								CidrBlock: aws.String("192.168.0.0/16"),
+								CidrBlockState: &ec2.VpcCidrBlockState{
+									State: &cidrBlockStateAssociated,
+								},
+							},
+						},
+					},
 				},
 			},
 			listLoadBalancerCalls: []listLoadBalancerCall{listLoadBalancerCallForEmptyLB},
@@ -1148,6 +1172,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
           "spec":{
              "name":"k8s-default-instance-0c68c79423",
              "targetType":"instance",
+             "ipAddressType":"ipv4",
              "port":31223,
              "protocol":"TCP",
              "healthCheckConfig":{
@@ -1169,6 +1194,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
           "spec":{
              "name":"k8s-default-instance-c200165858",
              "targetType":"instance",
+             "ipAddressType":"ipv4",
              "port":32323,
              "protocol":"TCP",
              "healthCheckConfig":{
@@ -1201,6 +1227,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
                       "$ref":"#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/default/instance-mode:80/status/targetGroupARN"
                    },
                    "targetType":"instance",
+                   "ipAddressType":"ipv4",
                    "serviceRef":{
                       "name":"instance-mode",
                       "port":80
@@ -1241,6 +1268,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
                       "$ref":"#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/default/instance-mode:83/status/targetGroupARN"
                    },
                    "targetType":"instance",
+                   "ipAddressType":"ipv4",
                    "serviceRef":{
                       "name":"instance-mode",
                       "port":83
@@ -1413,6 +1441,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
           "spec":{
              "name":"k8s-app-trafficl-d2b8571b2f",
              "targetType":"instance",
+             "ipAddressType":"ipv4",
              "port":31223,
              "protocol":"TCP",
              "healthCheckConfig":{
@@ -1435,6 +1464,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
           "spec":{
              "name":"k8s-app-trafficl-4be0ac1fb8",
              "targetType":"instance",
+             "ipAddressType":"ipv4",
              "port":32323,
              "protocol":"TCP",
              "healthCheckConfig":{
@@ -1468,6 +1498,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
                       "$ref":"#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/app/traffic-local:80/status/targetGroupARN"
                    },
                    "targetType":"instance",
+                   "ipAddressType":"ipv4",
                    "serviceRef":{
                       "name":"traffic-local",
                       "port":80
@@ -1538,6 +1569,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
                       "$ref":"#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/app/traffic-local:83/status/targetGroupARN"
                    },
                    "targetType":"instance",
+                   "ipAddressType":"ipv4",
                    "serviceRef":{
                       "name":"traffic-local",
                       "port":83
@@ -1685,6 +1717,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
           "spec":{
              "name":"k8s-default-nlbipsvc-d4818dcd51",
              "targetType":"ip",
+             "ipAddressType":"ipv4",
              "port":80,
              "protocol":"TCP",
              "tags": {
@@ -1721,6 +1754,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
                       "$ref":"#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/default/nlb-ip-svc-tls:80/status/targetGroupARN"
                    },
                    "targetType":"ip",
+                   "ipAddressType":"ipv4",
                    "serviceRef":{
                       "name":"nlb-ip-svc-tls",
                       "port":80
@@ -1780,9 +1814,24 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
 				},
 			},
 			resolveViaDiscoveryCalls: []resolveViaDiscoveryCall{resolveViaDiscoveryCallForOneSubnet},
-			resolveCIDRsCalls: []resolveCIDRsCall{
+			fetchVPCInfoCalls: []fetchVPCInfoCall{
 				{
-					cidrs: []string{"192.160.0.0/16", "100.64.0.0/16"},
+					wantVPCInfo: networking.VPCInfo{
+						CidrBlockAssociationSet: []*ec2.VpcCidrBlockAssociation{
+							{
+								CidrBlock: aws.String("192.160.0.0/16"),
+								CidrBlockState: &ec2.VpcCidrBlockState{
+									State: &cidrBlockStateAssociated,
+								},
+							},
+							{
+								CidrBlock: aws.String("100.64.0.0/16"),
+								CidrBlockState: &ec2.VpcCidrBlockState{
+									State: &cidrBlockStateAssociated,
+								},
+							},
+						},
+					},
 				},
 			},
 			listLoadBalancerCalls: []listLoadBalancerCall{listLoadBalancerCallForEmptyLB},
@@ -1822,6 +1871,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
           "template": {
             "spec": {
               "targetType": "ip",
+              "ipAddressType":"ipv4",
               "targetGroupARN": {
                 "$ref": "#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/default/ip-target:80/status/targetGroupARN"
               },
@@ -1882,6 +1932,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
       "default/ip-target:80": {
         "spec": {
           "targetType": "ip",
+          "ipAddressType":"ipv4",
           "protocol": "TCP",
           "name": "k8s-default-iptarget-cc40ce9c73",
           "healthCheckConfig": {
@@ -1961,7 +2012,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
 				},
 			},
 			resolveViaDiscoveryCalls: []resolveViaDiscoveryCall{resolveViaDiscoveryCallForOneSubnet},
-			resolveCIDRsCalls: []resolveCIDRsCall{
+			fetchVPCInfoCalls: []fetchVPCInfoCall{
 				{
 					err: errors.New("unable to resolve VPC CIDRs"),
 				},
@@ -1984,6 +2035,7 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
 						"service.beta.kubernetes.io/aws-load-balancer-nlb-target-type": "ip",
 						"service.beta.kubernetes.io/aws-load-balancer-attributes":      "deletion_protection.enabled=true",
 					},
+					Finalizers: []string{"service.k8s.aws/resources"},
 				},
 				Spec: corev1.ServiceSpec{
 					Type:     corev1.ServiceTypeLoadBalancer,
@@ -1999,6 +2051,658 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
 			},
 			wantError: true,
 		},
+		{
+			testName: "ipv6 service without dualstask",
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "traffic-local",
+					Namespace: "default",
+					Annotations: map[string]string{
+						"service.beta.kubernetes.io/aws-load-balancer-type":            "external",
+						"service.beta.kubernetes.io/aws-load-balancer-nlb-target-type": "instance",
+					},
+				},
+				Spec: corev1.ServiceSpec{
+					Type:       corev1.ServiceTypeLoadBalancer,
+					Selector:   map[string]string{"app": "hello"},
+					IPFamilies: []corev1.IPFamily{corev1.IPv6Protocol},
+					Ports: []corev1.ServicePort{
+						{
+							Port:       80,
+							TargetPort: intstr.FromInt(80),
+							Protocol:   corev1.ProtocolTCP,
+							NodePort:   32332,
+						},
+					},
+				},
+			},
+			resolveViaDiscoveryCalls: []resolveViaDiscoveryCall{resolveViaDiscoveryCallForOneSubnet},
+			listLoadBalancerCalls:    []listLoadBalancerCall{listLoadBalancerCallForEmptyLB},
+			wantError:                true,
+		},
+		{
+			testName: "ipv6 for NLB",
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "traffic-local",
+					Namespace: "default",
+					Annotations: map[string]string{
+						"service.beta.kubernetes.io/aws-load-balancer-type":            "external",
+						"service.beta.kubernetes.io/aws-load-balancer-nlb-target-type": "instance",
+						"service.beta.kubernetes.io/aws-load-balancer-ip-address-type": "dualstack",
+					},
+				},
+				Spec: corev1.ServiceSpec{
+					Type:       corev1.ServiceTypeLoadBalancer,
+					Selector:   map[string]string{"app": "hello"},
+					IPFamilies: []corev1.IPFamily{corev1.IPv6Protocol},
+					Ports: []corev1.ServicePort{
+						{
+							Port:       80,
+							TargetPort: intstr.FromInt(80),
+							Protocol:   corev1.ProtocolTCP,
+							NodePort:   32332,
+						},
+					},
+				},
+			},
+			fetchVPCInfoCalls: []fetchVPCInfoCall{
+				{
+					wantVPCInfo: networking.VPCInfo{
+						Ipv6CidrBlockAssociationSet: []*ec2.VpcIpv6CidrBlockAssociation{
+							{
+								Ipv6CidrBlock: aws.String("2600:1fe3:3c0:1d00::/56"),
+								Ipv6CidrBlockState: &ec2.VpcCidrBlockState{
+									State: &cidrBlockStateAssociated,
+								},
+							},
+						},
+					},
+				},
+			},
+			resolveViaDiscoveryCalls: []resolveViaDiscoveryCall{resolveViaDiscoveryCallForOneSubnet},
+			listLoadBalancerCalls:    []listLoadBalancerCall{listLoadBalancerCallForEmptyLB},
+			wantNumResources:         4,
+			wantValue: `
+{
+  "id": "default/traffic-local",
+  "resources": {
+    "AWS::ElasticLoadBalancingV2::Listener": {
+      "80": {
+        "spec": {
+          "loadBalancerARN": {
+            "$ref": "#/resources/AWS::ElasticLoadBalancingV2::LoadBalancer/LoadBalancer/status/loadBalancerARN"
+          },
+          "port": 80,
+          "protocol": "TCP",
+          "defaultActions": [
+            {
+              "type": "forward",
+              "forwardConfig": {
+                "targetGroups": [
+                  {
+                    "targetGroupARN": {
+                      "$ref": "#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/default/traffic-local:80/status/targetGroupARN"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "AWS::ElasticLoadBalancingV2::LoadBalancer": {
+      "LoadBalancer": {
+        "spec": {
+          "name": "k8s-default-trafficl-6652458428",
+          "type": "network",
+          "scheme": "internal",
+          "ipAddressType": "dualstack",
+          "subnetMapping": [
+            {
+              "subnetID": "subnet-1"
+            }
+          ]
+        }
+      }
+    },
+    "AWS::ElasticLoadBalancingV2::TargetGroup": {
+      "default/traffic-local:80": {
+        "spec": {
+          "name": "k8s-default-trafficl-060a48475d",
+          "targetType": "instance",
+          "port": 32332,
+          "protocol": "TCP",
+          "ipAddressType": "ipv6",
+          "healthCheckConfig": {
+            "port": "traffic-port",
+            "protocol": "TCP",
+            "intervalSeconds": 10,
+            "healthyThresholdCount": 3,
+            "unhealthyThresholdCount": 3
+          },
+          "targetGroupAttributes": [
+            {
+              "key": "proxy_protocol_v2.enabled",
+              "value": "false"
+            }
+          ]
+        }
+      }
+    },
+    "K8S::ElasticLoadBalancingV2::TargetGroupBinding": {
+      "default/traffic-local:80": {
+        "spec": {
+          "template": {
+            "metadata": {
+              "name": "k8s-default-trafficl-060a48475d",
+              "namespace": "default",
+              "creationTimestamp": null
+            },
+            "spec": {
+              "targetGroupARN": {
+                "$ref": "#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/default/traffic-local:80/status/targetGroupARN"
+              },
+              "targetType": "instance",
+              "serviceRef": {
+                "name": "traffic-local",
+                "port": 80
+              },
+              "networking": {
+                "ingress": [
+                  {
+                    "from": [
+                      {
+                        "ipBlock": {
+                          "cidr": "2600:1fe3:3c0:1d00::/56"
+                        }
+                      }
+                    ],
+                    "ports": [
+                      {
+                        "protocol": "TCP",
+                        "port": 32332
+                      }
+                    ]
+                  }
+                ]
+              },
+              "ipAddressType": "ipv6"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+`,
+		},
+		{
+			testName: "ipv6 for NLB internet-facing scheme",
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "traffic-local",
+					Namespace: "default",
+					Annotations: map[string]string{
+						"service.beta.kubernetes.io/aws-load-balancer-type":            "external",
+						"service.beta.kubernetes.io/aws-load-balancer-nlb-target-type": "instance",
+						"service.beta.kubernetes.io/aws-load-balancer-ip-address-type": "dualstack",
+						"service.beta.kubernetes.io/aws-load-balancer-scheme":          "internet-facing",
+					},
+				},
+				Spec: corev1.ServiceSpec{
+					Type:       corev1.ServiceTypeLoadBalancer,
+					Selector:   map[string]string{"app": "hello"},
+					IPFamilies: []corev1.IPFamily{corev1.IPv6Protocol},
+					Ports: []corev1.ServicePort{
+						{
+							Port:       80,
+							TargetPort: intstr.FromInt(80),
+							Protocol:   corev1.ProtocolTCP,
+							NodePort:   32332,
+						},
+					},
+				},
+			},
+			resolveViaDiscoveryCalls: []resolveViaDiscoveryCall{resolveViaDiscoveryCallForOneSubnet},
+			listLoadBalancerCalls:    []listLoadBalancerCall{listLoadBalancerCallForEmptyLB},
+			wantNumResources:         4,
+			wantValue: `
+{
+  "id": "default/traffic-local",
+  "resources": {
+    "AWS::ElasticLoadBalancingV2::Listener": {
+      "80": {
+        "spec": {
+          "loadBalancerARN": {
+            "$ref": "#/resources/AWS::ElasticLoadBalancingV2::LoadBalancer/LoadBalancer/status/loadBalancerARN"
+          },
+          "port": 80,
+          "protocol": "TCP",
+          "defaultActions": [
+            {
+              "type": "forward",
+              "forwardConfig": {
+                "targetGroups": [
+                  {
+                    "targetGroupARN": {
+                      "$ref": "#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/default/traffic-local:80/status/targetGroupARN"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "AWS::ElasticLoadBalancingV2::LoadBalancer": {
+      "LoadBalancer": {
+        "spec": {
+          "name": "k8s-default-trafficl-579592c587",
+          "type": "network",
+          "scheme": "internet-facing",
+          "ipAddressType": "dualstack",
+          "subnetMapping": [
+            {
+              "subnetID": "subnet-1"
+            }
+          ]
+        }
+      }
+    },
+    "AWS::ElasticLoadBalancingV2::TargetGroup": {
+      "default/traffic-local:80": {
+        "spec": {
+          "name": "k8s-default-trafficl-060a48475d",
+          "targetType": "instance",
+          "port": 32332,
+          "protocol": "TCP",
+          "ipAddressType": "ipv6",
+          "healthCheckConfig": {
+            "port": "traffic-port",
+            "protocol": "TCP",
+            "intervalSeconds": 10,
+            "healthyThresholdCount": 3,
+            "unhealthyThresholdCount": 3
+          },
+          "targetGroupAttributes": [
+            {
+              "key": "proxy_protocol_v2.enabled",
+              "value": "false"
+            }
+          ]
+        }
+      }
+    },
+    "K8S::ElasticLoadBalancingV2::TargetGroupBinding": {
+      "default/traffic-local:80": {
+        "spec": {
+          "template": {
+            "metadata": {
+              "name": "k8s-default-trafficl-060a48475d",
+              "namespace": "default",
+              "creationTimestamp": null
+            },
+            "spec": {
+              "targetGroupARN": {
+                "$ref": "#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/default/traffic-local:80/status/targetGroupARN"
+              },
+              "targetType": "instance",
+              "serviceRef": {
+                "name": "traffic-local",
+                "port": 80
+              },
+              "networking": {
+                "ingress": [
+                  {
+                    "from": [
+                      {
+                        "ipBlock": {
+                          "cidr": "::/0"
+                        }
+                      }
+                    ],
+                    "ports": [
+                      {
+                        "protocol": "TCP",
+                        "port": 32332
+                      }
+                    ]
+                  }
+                ]
+              },
+              "ipAddressType": "ipv6"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+`,
+		},
+		{
+			testName: "service type NodePort, restrict to LoadBalancer enabled",
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "type-nodeport",
+					Namespace: "some-namespace",
+					Annotations: map[string]string{
+						"service.beta.kubernetes.io/aws-load-balancer-type":            "external",
+						"service.beta.kubernetes.io/aws-load-balancer-internal":        "true",
+						"service.beta.kubernetes.io/aws-load-balancer-nlb-target-type": "ip",
+					},
+				},
+				Spec: corev1.ServiceSpec{
+					Type: corev1.ServiceTypeNodePort,
+				},
+			},
+			restrictToTypeLoadBalancer: true,
+			wantValue: `
+{
+"id": "some-namespace/type-nodeport",
+"resources": {}
+}
+`,
+		},
+		{
+			testName: "service type LoadBalancer, no lb type annotation",
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "type-loadbalancer",
+					Namespace: "some-namespace",
+				},
+				Spec: corev1.ServiceSpec{
+					Type: corev1.ServiceTypeNodePort,
+				},
+			},
+			wantValue: `
+{
+"id": "some-namespace/type-loadbalancer",
+"resources": {}
+}
+`,
+		},
+		{
+			testName: "spec.loadBalancerClass specified",
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "lb-with-class",
+					Namespace: "awesome",
+				},
+				Spec: corev1.ServiceSpec{
+					Type:              corev1.ServiceTypeLoadBalancer,
+					LoadBalancerClass: aws.String("service.k8s.aws/nlb"),
+					Selector:          map[string]string{"app": "class"},
+					Ports: []corev1.ServicePort{
+						{
+							Name:       "http",
+							Port:       80,
+							TargetPort: intstr.FromInt(8080),
+							Protocol:   corev1.ProtocolTCP,
+							NodePort:   32110,
+						},
+					},
+				},
+			},
+			resolveViaDiscoveryCalls: []resolveViaDiscoveryCall{resolveViaDiscoveryCallForOneSubnet},
+			listLoadBalancerCalls:    []listLoadBalancerCall{listLoadBalancerCallForEmptyLB},
+			fetchVPCInfoCalls: []fetchVPCInfoCall{
+				{
+					wantVPCInfo: networking.VPCInfo{
+						CidrBlockAssociationSet: []*ec2.VpcCidrBlockAssociation{
+							{
+								CidrBlock: aws.String("192.168.0.0/16"),
+								CidrBlockState: &ec2.VpcCidrBlockState{
+									State: &cidrBlockStateAssociated,
+								},
+							},
+						},
+					},
+				},
+			},
+			wantNumResources: 4,
+			wantValue: `
+{
+  "id": "awesome/lb-with-class",
+  "resources": {
+    "AWS::ElasticLoadBalancingV2::Listener": {
+      "80": {
+        "spec": {
+          "loadBalancerARN": {
+            "$ref": "#/resources/AWS::ElasticLoadBalancingV2::LoadBalancer/LoadBalancer/status/loadBalancerARN"
+          },
+          "port": 80,
+          "protocol": "TCP",
+          "defaultActions": [
+            {
+              "type": "forward",
+              "forwardConfig": {
+                "targetGroups": [
+                  {
+                    "targetGroupARN": {
+                      "$ref": "#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/awesome/lb-with-class:80/status/targetGroupARN"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "AWS::ElasticLoadBalancingV2::LoadBalancer": {
+      "LoadBalancer": {
+        "spec": {
+          "name": "k8s-awesome-lbwithcl-6652458428",
+          "type": "network",
+          "scheme": "internal",
+          "ipAddressType": "ipv4",
+          "subnetMapping": [
+            {
+              "subnetID": "subnet-1"
+            }
+          ]
+        }
+      }
+    },
+    "AWS::ElasticLoadBalancingV2::TargetGroup": {
+      "awesome/lb-with-class:80": {
+        "spec": {
+          "name": "k8s-awesome-lbwithcl-081c7df2ca",
+          "targetType": "instance",
+          "port": 32110,
+          "protocol": "TCP",
+          "ipAddressType": "ipv4",
+          "healthCheckConfig": {
+            "port": "traffic-port",
+            "protocol": "TCP",
+            "intervalSeconds": 10,
+            "healthyThresholdCount": 3,
+            "unhealthyThresholdCount": 3
+          },
+          "targetGroupAttributes": [
+            {
+              "key": "proxy_protocol_v2.enabled",
+              "value": "false"
+            }
+          ]
+        }
+      }
+    },
+    "K8S::ElasticLoadBalancingV2::TargetGroupBinding": {
+      "awesome/lb-with-class:80": {
+        "spec": {
+          "template": {
+            "metadata": {
+              "name": "k8s-awesome-lbwithcl-081c7df2ca",
+              "namespace": "awesome",
+              "creationTimestamp": null
+            },
+            "spec": {
+              "targetGroupARN": {
+                "$ref": "#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/awesome/lb-with-class:80/status/targetGroupARN"
+              },
+              "targetType": "instance",
+              "serviceRef": {
+                "name": "lb-with-class",
+                "port": 80
+              },
+              "networking": {
+                "ingress": [
+                  {
+                    "from": [
+                      {
+                        "ipBlock": {
+                          "cidr": "192.168.0.0/16"
+                        }
+                      }
+                    ],
+                    "ports": [
+                      {
+                        "protocol": "TCP",
+                        "port": 32110
+                      }
+                    ]
+                  }
+                ]
+              },
+              "ipAddressType": "ipv4"
+            }
+          }
+        }
+      }
+    }
+  }
+}`,
+		},
+		{
+			testName: "with backend SG rule management disabled",
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "manual-sg-rule",
+					Namespace: "default",
+					UID:       "c93458ad-9ef5-4c4c-bc0b-b31599ff585b",
+					Annotations: map[string]string{
+						"service.beta.kubernetes.io/aws-load-balancer-type":                                "external",
+						"service.beta.kubernetes.io/aws-load-balancer-nlb-target-type":                     "ip",
+						"service.beta.kubernetes.io/aws-load-balancer-manage-backend-security-group-rules": "false",
+					},
+				},
+				Spec: corev1.ServiceSpec{
+					Type:     corev1.ServiceTypeLoadBalancer,
+					Selector: map[string]string{"app": "hello"},
+					Ports: []corev1.ServicePort{
+						{
+							Port:       80,
+							TargetPort: intstr.FromInt(80),
+							Protocol:   corev1.ProtocolTCP,
+						},
+					},
+				},
+			},
+			resolveViaDiscoveryCalls: []resolveViaDiscoveryCall{resolveViaDiscoveryCallForOneSubnet},
+			listLoadBalancerCalls:    []listLoadBalancerCall{listLoadBalancerCallForEmptyLB},
+			wantError:                false,
+			wantValue: `
+{
+ "id":"default/manual-sg-rule",
+ "resources":{
+    "AWS::ElasticLoadBalancingV2::Listener":{
+       "80":{
+          "spec":{
+             "loadBalancerARN":{
+                "$ref":"#/resources/AWS::ElasticLoadBalancingV2::LoadBalancer/LoadBalancer/status/loadBalancerARN"
+             },
+             "port":80,
+             "protocol":"TCP",
+             "defaultActions":[
+                {
+                   "type":"forward",
+                   "forwardConfig":{
+                      "targetGroups":[
+                         {
+                            "targetGroupARN":{
+                               "$ref":"#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/default/manual-sg-rule:80/status/targetGroupARN"
+                            }
+                         }
+                      ]
+                   }
+                }
+             ]
+          }
+       }
+    },
+    "AWS::ElasticLoadBalancingV2::LoadBalancer":{
+       "LoadBalancer":{
+          "spec":{
+             "name":"k8s-default-manualsg-7af4592f28",
+             "type":"network",
+             "scheme":"internal",
+             "ipAddressType":"ipv4",
+             "subnetMapping":[
+                {
+                   "subnetID":"subnet-1"
+                }
+             ]
+          }
+       }
+    },
+    "AWS::ElasticLoadBalancingV2::TargetGroup":{
+       "default/manual-sg-rule:80":{
+          "spec":{
+             "name":"k8s-default-manualsg-4f421e4c8d",
+             "targetType":"ip",
+             "ipAddressType":"ipv4",
+             "port":80,
+             "protocol":"TCP",
+             "healthCheckConfig":{
+                "port":"traffic-port",
+                "protocol":"TCP",
+                "intervalSeconds":10,
+                "healthyThresholdCount":3,
+                "unhealthyThresholdCount":3
+             },
+             "targetGroupAttributes":[
+                {
+                   "key":"proxy_protocol_v2.enabled",
+                   "value":"false"
+                }
+             ]
+          }
+       }
+    },
+    "K8S::ElasticLoadBalancingV2::TargetGroupBinding":{
+       "default/manual-sg-rule:80":{
+          "spec":{
+             "template":{
+                "metadata":{
+                   "name":"k8s-default-manualsg-4f421e4c8d",
+                   "namespace":"default",
+                   "creationTimestamp":null
+                },
+                "spec":{
+                   "targetGroupARN":{
+                      "$ref":"#/resources/AWS::ElasticLoadBalancingV2::TargetGroup/default/manual-sg-rule:80/status/targetGroupARN"
+                   },
+                   "targetType":"ip",
+                   "ipAddressType":"ipv4",
+                   "serviceRef":{
+                      "name":"manual-sg-rule",
+                      "port":80
+                   }
+                }
+             }
+          }
+       }
+    }
+ }
+}
+`,
+			wantNumResources: 4,
+		},
 	}
 
 	for _, tt := range tests {
@@ -2013,7 +2717,10 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
 			for _, call := range tt.resolveViaNameOrIDSliceCalls {
 				subnetsResolver.EXPECT().ResolveViaNameOrIDSlice(gomock.Any(), gomock.Any(), gomock.Any()).Return(call.subnets, call.err)
 			}
-
+			featureGates := config.NewFeatureGates()
+			if tt.restrictToTypeLoadBalancer {
+				featureGates.Enable(config.ServiceTypeLoadBalancerOnly)
+			}
 			annotationParser := annotations.NewSuffixAnnotationParser("service.beta.kubernetes.io")
 			trackingProvider := tracking.NewDefaultProvider("service.k8s.aws", "my-cluster")
 
@@ -2021,13 +2728,13 @@ func Test_defaultModelBuilderTask_Build(t *testing.T) {
 			for _, call := range tt.listLoadBalancerCalls {
 				elbv2TaggingManager.EXPECT().ListLoadBalancers(gomock.Any(), gomock.Any()).Return(call.sdkLBs, call.err)
 			}
-
-			vpcResolver := networking.NewMockVPCResolver(ctrl)
-			for _, call := range tt.resolveCIDRsCalls {
-				vpcResolver.EXPECT().ResolveCIDRs(gomock.Any()).Return(call.cidrs, call.err).AnyTimes()
+			vpcInfoProvider := networking.NewMockVPCInfoProvider(ctrl)
+			for _, call := range tt.fetchVPCInfoCalls {
+				vpcInfoProvider.EXPECT().FetchVPCInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(call.wantVPCInfo, call.err).AnyTimes()
 			}
-			builder := NewDefaultModelBuilder(annotationParser, subnetsResolver, vpcResolver, trackingProvider, elbv2TaggingManager,
-				"my-cluster", nil, nil, "ELBSecurityPolicy-2016-08")
+			serviceUtils := NewServiceUtils(annotationParser, "service.k8s.aws/resources", "service.k8s.aws/nlb", featureGates)
+			builder := NewDefaultModelBuilder(annotationParser, subnetsResolver, vpcInfoProvider, "vpc-xxx", trackingProvider, elbv2TaggingManager,
+				"my-cluster", nil, nil, "ELBSecurityPolicy-2016-08", serviceUtils)
 			ctx := context.Background()
 			stack, _, err := builder.Build(ctx, tt.svc)
 			if tt.wantError {

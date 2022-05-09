@@ -4,7 +4,7 @@ import (
 	"context"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
-	networking "k8s.io/api/networking/v1beta1"
+	networking "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
@@ -63,7 +63,8 @@ func (h *enqueueRequestsForSecretEvent) Delete(e event.DeleteEvent, _ workqueue.
 }
 
 func (h *enqueueRequestsForSecretEvent) Generic(e event.GenericEvent, _ workqueue.RateLimitingInterface) {
-	// we don't have any generic event for secrets.
+	secretObj := e.Object.(*corev1.Secret)
+	h.enqueueImpactedObjects(secretObj)
 }
 
 func (h *enqueueRequestsForSecretEvent) enqueueImpactedObjects(secret *corev1.Secret) {

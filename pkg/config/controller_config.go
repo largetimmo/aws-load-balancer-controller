@@ -32,12 +32,12 @@ const (
 	defaultEnableBackendSG                           = true
 	defaultEnableEndpointSlices                      = false
 	defaultDisableRestrictedSGRules                  = false
-	defaultEnableRestrictedSGRules                   = false
 )
 
 var (
 	trackingTagKeys = sets.NewString(
 		"elbv2.k8s.aws/cluster",
+		"elbv2.k8s.aws/resource",
 		"ingress.k8s.aws/stack",
 		"ingress.k8s.aws/resource",
 		"service.k8s.aws/stack",
@@ -61,6 +61,8 @@ type ControllerConfig struct {
 	IngressConfig IngressConfig
 	// Configurations for Addons feature
 	AddonsConfig AddonsConfig
+	// Configurations for the Service controller
+	ServiceConfig ServiceConfig
 
 	// Default AWS Tags that will be applied to all AWS resources managed by this controller.
 	DefaultTags map[string]string
@@ -97,6 +99,8 @@ type ControllerConfig struct {
 	// need to be exposed via NLBs.
 	// RestrictedSG Rules MUST NOT be disabled for this flag to be effective.
 	EnableRestrictedNLBSGRules bool
+
+	FeatureGates FeatureGates
 }
 
 // BindFlags binds the command line flags to the fields in the config object
@@ -127,12 +131,14 @@ func (cfg *ControllerConfig) BindFlags(fs *pflag.FlagSet) {
 	fs.BoolVar(&cfg.EnableRestrictedNLBSGRules, flagEnableNLBRestrictedSGRules, defaultEnableRestrictedSGRules,
 		"Enables the usage of restricted security group rules for NLB services")
 
+	cfg.FeatureGates.BindFlags(fs)
 	cfg.AWSConfig.BindFlags(fs)
 	cfg.RuntimeConfig.BindFlags(fs)
 
 	cfg.PodWebhookConfig.BindFlags(fs)
 	cfg.IngressConfig.BindFlags(fs)
 	cfg.AddonsConfig.BindFlags(fs)
+	cfg.ServiceConfig.BindFlags(fs)
 }
 
 // Validate the controller configuration

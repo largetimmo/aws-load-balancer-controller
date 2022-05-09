@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"inet.af/netaddr"
 	"time"
 
 	"k8s.io/client-go/tools/record"
@@ -39,10 +40,11 @@ type ResourceManager interface {
 // NewDefaultResourceManager constructs new defaultResourceManager.
 func NewDefaultResourceManager(k8sClient client.Client, elbv2Client services.ELBV2, ec2Client services.EC2,
 	podInfoRepo k8s.PodInfoRepo, sgManager networking.SecurityGroupManager, sgReconciler networking.SecurityGroupReconciler,
-	vpcID string, clusterName string, eventRecorder record.EventRecorder, logger logr.Logger, useEndpointSlices bool, disabledRestrictedSGRulesFlag bool, enableRestrictedNLBSGRulesFlag bool) *defaultResourceManager {
-
+	vpcInfoProvider networking.VPCInfoProvider,
+	vpcID string, clusterName string, failOpenEnabled bool, endpointSliceEnabled bool, disabledRestrictedSGRulesFlag bool, enableRestrictedNLBSGRulesFlag bool,
+	eventRecorder record.EventRecorder, logger logr.Logger) *defaultResourceManager {
 	targetsManager := NewCachedTargetsManager(elbv2Client, logger)
-	endpointResolver := backend.NewDefaultEndpointResolver(k8sClient, podInfoRepo, logger)
+	endpointResolver := backend.NewDefaultEndpointResolver(k8sClient, podInfoRepo, failOpenEnabled, endpointSliceEnabled, logger)
 
 	nodeInfoProvider := networking.NewDefaultNodeInfoProvider(ec2Client, logger)
 	podENIResolver := networking.NewDefaultPodENIInfoResolver(k8sClient, ec2Client, nodeInfoProvider, vpcID, logger)
@@ -56,9 +58,11 @@ func NewDefaultResourceManager(k8sClient client.Client, elbv2Client services.ELB
 		networkingManager: networkingManager,
 		eventRecorder:     eventRecorder,
 		logger:            logger,
+		vpcID:             vpcID,
+		vpcInfoProvider:   vpcInfoProvider,
+		podInfoRepo:       podInfoRepo,
 
 		targetHealthRequeueDuration: defaultTargetHealthRequeueDuration,
-		enableEndpointSlices:        useEndpointSlices,
 	}
 }
 
@@ -72,9 +76,11 @@ type defaultResourceManager struct {
 	networkingManager NetworkingManager
 	eventRecorder     record.EventRecorder
 	logger            logr.Logger
+	vpcInfoProvider   networking.VPCInfoProvider
+	podInfoRepo       k8s.PodInfoRepo
+	vpcID             string
 
 	targetHealthRequeueDuration time.Duration
-	enableEndpointSlices        bool
 }
 
 func (m *defaultResourceManager) Reconcile(ctx context.Context, tgb *elbv2api.TargetGroupBinding) error {
@@ -94,6 +100,9 @@ func (m *defaultResourceManager) Cleanup(ctx context.Context, tgb *elbv2api.Targ
 	if err := m.networkingManager.Cleanup(ctx, tgb); err != nil {
 		return err
 	}
+	if err := m.updatePodAsHealthyForDeletedTGB(ctx, tgb); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -104,16 +113,13 @@ func (m *defaultResourceManager) reconcileWithIPTargetType(ctx context.Context, 
 	resolveOpts := []backend.EndpointResolveOption{
 		backend.WithPodReadinessGate(targetHealthCondType),
 	}
+
 	var endpoints []backend.PodEndpoint
 	var containsPotentialReadyEndpoints bool
 	var err error
 
-	// Decide whether to use Endpoints or EndpointSlices based on config flag
-	if m.enableEndpointSlices {
-		endpoints, containsPotentialReadyEndpoints, err = m.endpointResolver.ResolvePodEndpointsFromSlices(ctx, svcKey, tgb.Spec.ServiceRef.Port, resolveOpts...)
-	} else {
-		endpoints, containsPotentialReadyEndpoints, err = m.endpointResolver.ResolvePodEndpoints(ctx, svcKey, tgb.Spec.ServiceRef.Port, resolveOpts...)
-	}
+	endpoints, containsPotentialReadyEndpoints, err = m.endpointResolver.ResolvePodEndpoints(ctx, svcKey, tgb.Spec.ServiceRef.Port, resolveOpts...)
+
 	if err != nil {
 		if errors.Is(err, backend.ErrNotFound) {
 			m.eventRecorder.Event(tgb, corev1.EventTypeWarning, k8s.TargetGroupBindingEventReasonBackendNotFound, err.Error())
@@ -133,11 +139,15 @@ func (m *defaultResourceManager) reconcileWithIPTargetType(ctx context.Context, 
 	if err := m.networkingManager.ReconcileForPodEndpoints(ctx, tgb, endpoints); err != nil {
 		return err
 	}
-	if err := m.deregisterTargets(ctx, tgARN, unmatchedTargets); err != nil {
-		return err
+	if len(unmatchedTargets) > 0 {
+		if err := m.deregisterTargets(ctx, tgARN, unmatchedTargets); err != nil {
+			return err
+		}
 	}
-	if err := m.registerPodEndpoints(ctx, tgARN, unmatchedEndpoints); err != nil {
-		return err
+	if len(unmatchedEndpoints) > 0 {
+		if err := m.registerPodEndpoints(ctx, tgARN, unmatchedEndpoints); err != nil {
+			return err
+		}
 	}
 
 	anyPodNeedFurtherProbe, err := m.updateTargetHealthPodCondition(ctx, targetHealthCondType, matchedEndpointAndTargets, unmatchedEndpoints)
@@ -187,11 +197,15 @@ func (m *defaultResourceManager) reconcileWithInstanceTargetType(ctx context.Con
 	if err := m.networkingManager.ReconcileForNodePortEndpoints(ctx, tgb, endpoints); err != nil {
 		return err
 	}
-	if err := m.deregisterTargets(ctx, tgARN, unmatchedTargets); err != nil {
-		return err
+	if len(unmatchedTargets) > 0 {
+		if err := m.deregisterTargets(ctx, tgARN, unmatchedTargets); err != nil {
+			return err
+		}
 	}
-	if err := m.registerNodePortEndpoints(ctx, tgARN, unmatchedEndpoints); err != nil {
-		return err
+	if len(unmatchedEndpoints) > 0 {
+		if err := m.registerNodePortEndpoints(ctx, tgARN, unmatchedEndpoints); err != nil {
+			return err
+		}
 	}
 	_ = drainingTargets
 	return nil
@@ -202,11 +216,15 @@ func (m *defaultResourceManager) cleanupTargets(ctx context.Context, tgb *elbv2a
 	if err != nil {
 		if isELBV2TargetGroupNotFoundError(err) {
 			return nil
+		} else if isELBV2TargetGroupARNInvalidError(err) {
+			return nil
 		}
 		return err
 	}
 	if err := m.deregisterTargets(ctx, tgb.Spec.TargetGroupARN, targets); err != nil {
 		if isELBV2TargetGroupNotFoundError(err) {
+			return nil
+		} else if isELBV2TargetGroupARNInvalidError(err) {
 			return nil
 		}
 		return err
@@ -312,6 +330,38 @@ func (m *defaultResourceManager) updateTargetHealthPodConditionForPod(ctx contex
 	return needFurtherProbe, nil
 }
 
+// updatePodAsHealthyForDeletedTGB updates pod's targetHealth condition as healthy when deleting a TGB
+// if the pod has readiness Gate.
+func (m *defaultResourceManager) updatePodAsHealthyForDeletedTGB(ctx context.Context, tgb *elbv2api.TargetGroupBinding) error {
+	targetHealthCondType := BuildTargetHealthPodConditionType(tgb)
+
+	allPodKeys := m.podInfoRepo.ListKeys(ctx)
+	for _, podKey := range allPodKeys {
+		// check the pod is in the same namespace with the tgb
+		if podKey.Namespace != tgb.Namespace {
+			continue
+		}
+		pod, exists, err := m.podInfoRepo.Get(ctx, podKey)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		if pod.HasAnyOfReadinessGates([]corev1.PodConditionType{targetHealthCondType}) {
+			targetHealth := &elbv2sdk.TargetHealth{
+				State:       awssdk.String(elbv2sdk.TargetHealthStateEnumHealthy),
+				Description: awssdk.String("Target Group Binding is deleted"),
+			}
+			_, err := m.updateTargetHealthPodConditionForPod(ctx, pod, targetHealth, targetHealthCondType)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (m *defaultResourceManager) deregisterTargets(ctx context.Context, tgARN string, targets []TargetInfo) error {
 	sdkTargets := make([]elbv2sdk.TargetDescription, 0, len(targets))
 	for _, target := range targets {
@@ -321,12 +371,32 @@ func (m *defaultResourceManager) deregisterTargets(ctx context.Context, tgARN st
 }
 
 func (m *defaultResourceManager) registerPodEndpoints(ctx context.Context, tgARN string, endpoints []backend.PodEndpoint) error {
+	vpcInfo, err := m.vpcInfoProvider.FetchVPCInfo(ctx, m.vpcID)
+	if err != nil {
+		return err
+	}
+	var vpcRawCIDRs []string
+	vpcRawCIDRs = append(vpcRawCIDRs, vpcInfo.AssociatedIPv4CIDRs()...)
+	vpcRawCIDRs = append(vpcRawCIDRs, vpcInfo.AssociatedIPv6CIDRs()...)
+	vpcCIDRs, err := networking.ParseCIDRs(vpcRawCIDRs)
+	if err != nil {
+		return err
+	}
+
 	sdkTargets := make([]elbv2sdk.TargetDescription, 0, len(endpoints))
 	for _, endpoint := range endpoints {
-		sdkTargets = append(sdkTargets, elbv2sdk.TargetDescription{
+		target := elbv2sdk.TargetDescription{
 			Id:   awssdk.String(endpoint.IP),
 			Port: awssdk.Int64(endpoint.Port),
-		})
+		}
+		podIP, err := netaddr.ParseIP(endpoint.IP)
+		if err != nil {
+			return err
+		}
+		if !networking.IsIPWithinCIDRs(podIP, vpcCIDRs) {
+			target.AvailabilityZone = awssdk.String("all")
+		}
+		sdkTargets = append(sdkTargets, target)
 	}
 	return m.targetsManager.RegisterTargets(ctx, tgARN, sdkTargets)
 }
@@ -471,6 +541,14 @@ func isELBV2TargetGroupNotFoundError(err error) bool {
 	var awsErr awserr.Error
 	if errors.As(err, &awsErr) {
 		return awsErr.Code() == "TargetGroupNotFound"
+	}
+	return false
+}
+
+func isELBV2TargetGroupARNInvalidError(err error) bool {
+	var awsErr awserr.Error
+	if errors.As(err, &awsErr) {
+		return awsErr.Code() == "ValidationError"
 	}
 	return false
 }

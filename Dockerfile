@@ -1,13 +1,15 @@
 # syntax=docker/dockerfile:experimental
 
-FROM --platform=${TARGETPLATFORM} golang:1.16 AS base
+FROM --platform=${TARGETPLATFORM} public.ecr.aws/docker/library/golang:1.17.8 AS base
 WORKDIR /workspace
 # Copy the Go Modules manifests
 COPY go.mod go.mod
 COPY go.sum go.sum
 # cache deps before building and copying source so that we don't need to re-download as much
 # and so that source changes don't invalidate our downloaded layer
-RUN GOPROXY=direct go mod download
+RUN --mount=type=bind,target=. \
+    --mount=type=cache,target=/root/.cache/go-build \
+    GOPROXY=direct go mod download
 
 FROM base AS build
 ARG TARGETOS
@@ -23,7 +25,7 @@ RUN --mount=type=bind,target=. \
     CGO_LDFLAGS="-Wl,-z,relro,-z,now" \
     go build -buildmode=pie -tags 'osusergo,netgo,static_build' -ldflags="-s -w -linkmode=external -extldflags '-static-pie' -X ${VERSION_PKG}.GitVersion=${GIT_VERSION} -X ${VERSION_PKG}.GitCommit=${GIT_COMMIT} -X ${VERSION_PKG}.BuildDate=${BUILD_DATE}" -mod=readonly -a -o /out/controller main.go
 
-FROM public.ecr.aws/eks-distro-build-tooling/eks-distro-minimal-base-nonroot:2021-08-22-1629654770 as bin-unix
+FROM public.ecr.aws/eks-distro-build-tooling/eks-distro-minimal-base-nonroot:2022-03-09-1646784337.2 as bin-unix
 
 COPY --from=build /out/controller /controller
 ENTRYPOINT ["/controller"]

@@ -3,14 +3,15 @@ package ingress
 import (
 	"context"
 	"fmt"
-	. "github.com/onsi/ginkgo"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/k8s"
 	elbv2model "sigs.k8s.io/aws-load-balancer-controller/pkg/model/elbv2"
 	"sigs.k8s.io/aws-load-balancer-controller/test/framework"
 	"sigs.k8s.io/aws-load-balancer-controller/test/framework/http"
 	"sigs.k8s.io/aws-load-balancer-controller/test/framework/utils"
-	"time"
 )
 
 var _ = Describe("test ingresses with multiple path and backends", func() {
@@ -23,7 +24,8 @@ var _ = Describe("test ingresses with multiple path and backends", func() {
 
 		if tf.Options.ControllerImage != "" {
 			By(fmt.Sprintf("ensure cluster installed with controller: %s", tf.Options.ControllerImage), func() {
-				tf.CTRLInstallationManager.UpgradeController(tf.Options.ControllerImage)
+				err := tf.CTRLInstallationManager.UpgradeController(tf.Options.ControllerImage)
+				Expect(err).NotTo(HaveOccurred())
 				time.Sleep(60 * time.Second)
 			})
 		}

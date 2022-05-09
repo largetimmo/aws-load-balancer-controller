@@ -3,6 +3,10 @@ package targetgroupbinding
 import (
 	"context"
 	"fmt"
+	"net"
+	"strings"
+	"sync"
+
 	awssdk "github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	ec2sdk "github.com/aws/aws-sdk-go/service/ec2"
@@ -13,14 +17,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"net"
 	elbv2api "sigs.k8s.io/aws-load-balancer-controller/apis/elbv2/v1beta1"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/backend"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/k8s"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/networking"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"strings"
-	"sync"
 )
 
 const (
@@ -328,15 +329,17 @@ func (m *defaultNetworkingManager) computeRestrictedIngressPermissionsPerSG(ctx 
 				}
 				permForCurrGroup := perms[0]
 				for _, perm := range perms {
-					if awssdk.Int64Value(perm.Permission.FromPort) > 0 && awssdk.Int64Value(perm.Permission.FromPort) < minPort {
-						minPort = awssdk.Int64Value(perm.Permission.FromPort)
+					if awssdk.Int64Value(perm.Permission.FromPort) == 0 && awssdk.Int64Value(perm.Permission.ToPort) == 0 {
+						minPort = defaultTgbMinPort
+						maxPort = defaultTgbMaxPort
+					} else {
+						if awssdk.Int64Value(perm.Permission.FromPort) < minPort {
+							minPort = awssdk.Int64Value(perm.Permission.FromPort)
+						}
+						if awssdk.Int64Value(perm.Permission.ToPort) > maxPort {
+							maxPort = awssdk.Int64Value(perm.Permission.ToPort)
+						}
 					}
-					if awssdk.Int64Value(perm.Permission.ToPort) > maxPort {
-						maxPort = awssdk.Int64Value(perm.Permission.ToPort)
-					}
-				}
-				if minPort > maxPort {
-					minPort, maxPort = defaultTgbMinPort, defaultTgbMaxPort
 				}
 				permForCurrGroup.Permission.FromPort = awssdk.Int64(minPort)
 				permForCurrGroup.Permission.ToPort = awssdk.Int64(maxPort)

@@ -7,7 +7,7 @@ import (
 
 	awssdk "github.com/aws/aws-sdk-go/aws"
 	"github.com/stretchr/testify/assert"
-	networking "k8s.io/api/networking/v1beta1"
+	networking "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/annotations"
@@ -579,7 +579,7 @@ func Test_defaultModelBuildTask_buildLoadBalancerName(t *testing.T) {
 				},
 				scheme: elbv2.LoadBalancerSchemeInternetFacing,
 			},
-			want: "bazbazfoofoobazbazfoofoobazbazfo",
+			wantErr: errors.New("load balancer name cannot be longer than 32 characters"),
 		},
 		{
 			name: "name annotation on single ingress only",

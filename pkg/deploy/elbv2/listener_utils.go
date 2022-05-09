@@ -6,6 +6,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	elbv2sdk "github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/pkg/errors"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/config"
 	elbv2model "sigs.k8s.io/aws-load-balancer-controller/pkg/model/elbv2"
 	"time"
 )
@@ -15,23 +16,23 @@ const (
 	defaultWaitLSExistenceTimeout      = 20 * time.Second
 )
 
-func buildSDKActions(modelActions []elbv2model.Action) ([]*elbv2sdk.Action, error) {
+func buildSDKActions(modelActions []elbv2model.Action, featureGates config.FeatureGates) ([]*elbv2sdk.Action, error) {
 	var sdkActions []*elbv2sdk.Action
 	if len(modelActions) != 0 {
 		sdkActions = make([]*elbv2sdk.Action, 0, len(modelActions))
 		for index, modelAction := range modelActions {
-			sdkAction, err := buildSDKAction(modelAction)
-			sdkAction.Order = awssdk.Int64(int64(index) + 1)
+			sdkAction, err := buildSDKAction(modelAction, featureGates)
 			if err != nil {
 				return nil, err
 			}
+			sdkAction.Order = awssdk.Int64(int64(index) + 1)
 			sdkActions = append(sdkActions, sdkAction)
 		}
 	}
 	return sdkActions, nil
 }
 
-func buildSDKAction(modelAction elbv2model.Action) (*elbv2sdk.Action, error) {
+func buildSDKAction(modelAction elbv2model.Action, featureGates config.FeatureGates) (*elbv2sdk.Action, error) {
 	sdkObj := &elbv2sdk.Action{}
 	sdkObj.Type = awssdk.String(string(modelAction.Type))
 	if modelAction.AuthenticateCognitoConfig != nil {
@@ -51,7 +52,15 @@ func buildSDKAction(modelAction elbv2model.Action) (*elbv2sdk.Action, error) {
 		if err != nil {
 			return nil, err
 		}
-		sdkObj.ForwardConfig = forwardConfig
+		if !featureGates.Enabled(config.WeightedTargetGroups) {
+			if len(forwardConfig.TargetGroups) == 1 {
+				sdkObj.TargetGroupArn = forwardConfig.TargetGroups[0].TargetGroupArn
+			} else {
+				return nil, errors.New("weighted target groups feature is disabled")
+			}
+		} else {
+			sdkObj.ForwardConfig = forwardConfig
+		}
 	}
 	return sdkObj, nil
 }
