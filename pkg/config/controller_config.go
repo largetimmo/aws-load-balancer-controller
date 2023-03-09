@@ -24,6 +24,7 @@ const (
 	flagBackendSecurityGroup                         = "backend-security-group"
 	flagEnableEndpointSlices                         = "enable-endpoint-slices"
 	flagDisableRestrictedSGRules                     = "disable-restricted-sg-rules"
+	flagEnableNLBRestrictedSGRules                   = "enable-nlb-restricted-sg-rules"
 	defaultLogLevel                                  = "info"
 	defaultMaxConcurrentReconciles                   = 3
 	defaultMaxExponentialBackoffDelay                = time.Second * 1000
@@ -93,6 +94,12 @@ type ControllerConfig struct {
 	// DisableRestrictedSGRules specifies whether to use restricted security group rules
 	DisableRestrictedSGRules bool
 
+	// EnableRestrictedNLBSGRules specifies whether to use restricted security group rules for NLB
+	// This will squash all rules for NLBs into a single port range rule when more than 200 NodePorts
+	// need to be exposed via NLBs.
+	// RestrictedSG Rules MUST NOT be disabled for this flag to be effective.
+	EnableRestrictedNLBSGRules bool
+
 	FeatureGates FeatureGates
 }
 
@@ -121,6 +128,8 @@ func (cfg *ControllerConfig) BindFlags(fs *pflag.FlagSet) {
 		"Enable EndpointSlices for IP targets instead of Endpoints")
 	fs.BoolVar(&cfg.DisableRestrictedSGRules, flagDisableRestrictedSGRules, defaultDisableRestrictedSGRules,
 		"Disable the usage of restricted security group rules")
+	fs.BoolVar(&cfg.EnableRestrictedNLBSGRules, flagEnableNLBRestrictedSGRules, defaultEnableRestrictedSGRules,
+		"Enables the usage of restricted security group rules for NLB services")
 
 	cfg.FeatureGates.BindFlags(fs)
 	cfg.AWSConfig.BindFlags(fs)
