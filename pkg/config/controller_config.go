@@ -32,6 +32,7 @@ const (
 	defaultEnableBackendSG                           = true
 	defaultEnableEndpointSlices                      = false
 	defaultDisableRestrictedSGRules                  = false
+	defaultEnableRestrictedSGRules                   = true
 )
 
 var (
