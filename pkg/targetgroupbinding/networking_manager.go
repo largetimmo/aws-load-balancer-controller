@@ -248,6 +248,36 @@ func (m *defaultNetworkingManager) computeAggregatedIngressPermissionsPerSG(ctx 
 	return m.computeRestrictedIngressPermissionsPerSG(ctx)
 }
 
+func (m *defaultNetworkingManager) groupNlbAndAlbIngressPermsBySourceAndProtocolPerSG(_ context.Context) map[string]map[string]map[string][]networking.IPPermissionInfo {
+	permsByProtocolAndSourcePerSG := make(map[string]map[string]map[string][]networking.IPPermissionInfo)
+	for _, ingressPermissionsPerSG := range m.ingressPermissionsPerSGByTGB {
+		for sgID, permissions := range ingressPermissionsPerSG {
+			if _, ok := permsByProtocolAndSourcePerSG[sgID]; !ok {
+				permsByProtocolAndSourcePerSG[sgID] = make(map[string]map[string][]networking.IPPermissionInfo)
+			}
+			for _, permission := range permissions {
+				protocol := awssdk.StringValue(permission.Permission.IpProtocol)
+				if _, ok := permsByProtocolAndSourcePerSG[sgID][protocol]; !ok {
+					permsByProtocolAndSourcePerSG[sgID][protocol] = make(map[string][]networking.IPPermissionInfo)
+				}
+				groupID := ""
+				if len(permission.Permission.UserIdGroupPairs) == 1 {
+					groupID = awssdk.StringValue(permission.Permission.UserIdGroupPairs[0].GroupId)
+				} else if len(permission.Permission.IpRanges) == 1 {
+					groupID = awssdk.StringValue(permission.Permission.IpRanges[0].CidrIp)
+				} else if len(permission.Permission.Ipv6Ranges) == 1 {
+					groupID = awssdk.StringValue(permission.Permission.Ipv6Ranges[0].CidrIpv6)
+				}
+				if _, ok := permsByProtocolAndSourcePerSG[sgID][protocol][groupID]; !ok {
+					permsByProtocolAndSourcePerSG[sgID][protocol][groupID] = []networking.IPPermissionInfo{}
+				}
+				permsByProtocolAndSourcePerSG[sgID][protocol][groupID] = append(permsByProtocolAndSourcePerSG[sgID][protocol][groupID], permission)
+			}
+		}
+	}
+	return permsByProtocolAndSourcePerSG
+}
+
 func (m *defaultNetworkingManager) groupIngressPermsBySourceAndProtocolPerSG(_ context.Context) (map[string][]networking.IPPermissionInfo, map[string]map[string]map[string][]networking.IPPermissionInfo) {
 	permsFromIPRangeRulesPerSG := make(map[string][]networking.IPPermissionInfo)
 	permsByProtocolAndSourcePerSG := make(map[string]map[string]map[string][]networking.IPPermissionInfo)
@@ -284,7 +314,11 @@ func (m *defaultNetworkingManager) groupIngressPermsBySourceAndProtocolPerSG(_ c
 
 // computeRestrictedIngressPermissionsPerSG will compute restricted ingress permissions group by source and protocol per SG
 func (m *defaultNetworkingManager) computeRestrictedIngressPermissionsPerSG(ctx context.Context) map[string][]networking.IPPermissionInfo {
-	permsFromIPRangeRulesPerSG, permsByProtocolAndSourcePerSG := m.groupIngressPermsBySourceAndProtocolPerSG(ctx)
+	
+	var permsFromIPRangeRulesPerSG map[string][]networking.IPPermissionInfo
+	var permsByProtocolAndSourcePerSG map[string]map[string]map[string][]networking.IPPermissionInfo
+	permsFromIPRangeRulesPerSG = make(map[string][]networking.IPPermissionInfo)
+	permsByProtocolAndSourcePerSG = m.groupNlbAndAlbIngressPermsBySourceAndProtocolPerSG(ctx)
 
 	restrictedPermByProtocolPerSG := make(map[string][]networking.IPPermissionInfo)
 	for sgID, permsByProtocolAndSource := range permsByProtocolAndSourcePerSG {
